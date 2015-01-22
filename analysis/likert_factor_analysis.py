@@ -320,6 +320,25 @@ item_best = model.item.trace()[minimum_index]
 
 ## compute WAIC
 
+def construct_prob_trace(trace=prob_likert.trace(), responses=responses):
+    return trace[:,range(responses.shape[0]),responses]
+
+def compute_waic(prob_trace=construct_prob_trace(), method=2):
+    ## compute log pointwise predictive density 
+    lppd = np.log(prob_trace.mean(axis=0)).sum()
+
+    if method == 1:
+        mean_log = np.log(prob_trace).mean(axis=0)
+        log_mean = np.log(prob_trace.mean(axis=0)) 
+        p_waic = 2 * (log_mean - mean_log).sum() 
+    elif method == 2:
+        p_waic = np.log(prob_trace).var(axis=0).sum()
+    else:
+        raise ValueError, 'method parameter must be either 1 or 2'
+        
+    return -2 * (lppd - p_waic)
+
+## write output
 if args.output:
     np.savetxt(os.path.join(args.output, 'verbfeatures_'+str(args.featurenum)+'.csv'), 
                verb_features_best.transpose(), 
