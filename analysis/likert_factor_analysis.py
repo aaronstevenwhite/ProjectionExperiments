@@ -3,6 +3,7 @@ import sys, os, re, argparse, itertools
 import theano, pymc
 import numpy as np
 import scipy as sp
+from waic import *
 
 ## example: ipython -i -- likert_factor_analysis.py --loadverbfeatures --loadfeatureloadings --loadjump --loaditem --featurenum 5
 
@@ -16,13 +17,13 @@ parser = argparse.ArgumentParser(description='Load data and run likert factor an
 ## file handling
 parser.add_argument('--verbs', 
                     type=str, 
-                    default='../materials/triad/lists/verbs.list')
+                    default='../materials/triad/verbs.list')
 parser.add_argument('--data', 
                     type=str, 
                     default='../data/frame/frame.filtered')
 parser.add_argument('--output', 
                     type=str, 
-                    default='./model')
+                    default='./model/likert_factor_analysis')
 
 ## model hyperparameters
 parser.add_argument('--featurenum', 
@@ -39,6 +40,10 @@ parser.add_argument('--loadingprior',
                     choices=['exponential', 'laplace'], 
                     default='exponential')
 parser.add_argument('--nonparametric', 
+                    nargs='?', 
+                    const=True, 
+                    default=False)
+parser.add_argument('--includeitemrandom', 
                     nargs='?', 
                     const=True, 
                     default=False)
@@ -250,10 +255,11 @@ def acceptability(verb_features=verb_features, feature_loadings=feature_loadings
 
 ## subject random effects
 
-jump_prior = pymc.Exponential(name='jump_prior', 
-                              beta=1.,
-                              value=sp.stats.expon.rvs(scale=.1),
-                              observed=False)
+jump_prior = pymc.Gamma(name='jump_prior', 
+                        alpha=0.001,
+                        beta=0.001,
+                        value=sp.stats.expon.rvs(scale=.1),
+                        observed=False)
 
 
 jump = pymc.Exponential(name='jump',
@@ -263,21 +269,31 @@ jump = pymc.Exponential(name='jump',
 
 ## item random effects
 
-item_prior = pymc.Exponential(name='item_prior', 
-                              beta=1.,
-                              value=sp.stats.expon.rvs(scale=.1),
-                              observed=False)
+if args.includeitemrandom:
+    item_prior = pymc.Gamma(name='item_prior',
+                            alpha=0.001,
+                            beta=0.001,
+                            value=sp.stats.expon.rvs(scale=.1),
+                            observed=False)
 
-item = pymc.Normal(name='item',
-                   mu=0.,
-                   tau=item_prior,
-                   value=initialize_item(),
-                   observed=False)
+    item = pymc.Normal(name='item',
+                       mu=0.,
+                       tau=item_prior,
+                       value=initialize_item(),
+                       observed=False)
 
+    @pymc.deterministic(trace=False)
+    def acceptability_item(acceptability=acceptability, item=item):
+        return acceptability[verb_indices, frame_indices] + item[item_indices]
+
+else:
+    @pymc.deterministic(trace=False)
+    def acceptability_item(acceptability=acceptability):
+        return acceptability[verb_indices, frame_indices]
+    
 
 @pymc.deterministic
-def prob_likert(acceptability=acceptability, jump=jump, item=item):
-    acceptability_item = acceptability[verb_indices, frame_indices] + item[item_indices]
+def prob_likert(acceptability_item=acceptability_item, jump=jump):
 
     if args.loadingprior == 'exponential':
         cumsums = np.cumsum(jump, axis=1)
@@ -291,6 +307,8 @@ def prob_likert(acceptability=acceptability, jump=jump, item=item):
     ones = np.ones(cdfs.shape[0])[:,None]
 
     return np.append(cdfs, ones, axis=1) - np.append(zeros, cdfs, axis=1)
+
+
 
 response = pymc.Categorical(name='response',
                             p=prob_likert,
@@ -316,27 +334,9 @@ feature_loadings_best = model.feature_loadings.trace()[minimum_index]
 
 ## get best random effects
 jump_best = model.jump.trace()[minimum_index]
-item_best = model.item.trace()[minimum_index]
 
-## compute WAIC
-
-def construct_prob_trace(trace=prob_likert.trace(), responses=responses):
-    return trace[:,range(responses.shape[0]),responses]
-
-def compute_waic(prob_trace=construct_prob_trace(), method=2):
-    ## compute log pointwise predictive density 
-    lppd = np.log(prob_trace.mean(axis=0)).sum()
-
-    if method == 1:
-        mean_log = np.log(prob_trace).mean(axis=0)
-        log_mean = np.log(prob_trace.mean(axis=0)) 
-        p_waic = 2 * (log_mean - mean_log).sum() 
-    elif method == 2:
-        p_waic = np.log(prob_trace).var(axis=0).sum()
-    else:
-        raise ValueError, 'method parameter must be either 1 or 2'
-        
-    return -2 * (lppd - p_waic)
+if args.includeitemrandom:
+    item_best = model.item.trace()[minimum_index]
 
 ## write output
 if args.output:
@@ -356,8 +356,17 @@ if args.output:
                header=';'.join(subj_vals),  
                delimiter=';',
                comments='')
-    np.savetxt(os.path.join(args.output, 'item_'+str(args.featurenum)+'.csv'), 
-               item_best[None,:], 
-               header=';'.join(item_vals.astype(str)),  
-               delimiter=';',
-               comments='')
+
+    if args.includeitemrandom:
+        np.savetxt(os.path.join(args.output, 'item_'+str(args.featurenum)+'.csv'), 
+                   item_best[None,:], 
+                   header=';'.join(item_vals.astype(str)),  
+                   delimiter=';',
+                   comments='')
+
+    with open(os.path.join(args.output, 'waic'), 'a') as f:
+        prob_trace = construct_prob_trace(trace=prob_likert.trace(), responses=responses)
+        lppd = compute_lppd(prob_trace=prob_trace)
+        waic = compute_waic(prob_trace=prob_trace)
+
+        f.write(','.join([str(args.featurenum), str(lppd), str(waic)])+'\n')
