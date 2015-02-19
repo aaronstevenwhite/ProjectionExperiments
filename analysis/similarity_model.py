@@ -3,7 +3,10 @@ import sys, os, re, argparse, itertools
 import theano, pymc
 import numpy as np
 import scipy as sp
+
+from sklearn.metrics import confusion_matrix 
 from waic import *
+
 
 ## example: ipython -i -- similarity_model.py --loadverbfeatures --loadfeatureloadings --loadjump --loaditem --featurenum 5
 
@@ -38,12 +41,6 @@ parser.add_argument('--output',
 parser.add_argument('--featurenum', 
                     type=int, 
                     default=10)
-parser.add_argument('--featuresparsity', 
-                    type=float, 
-                    default=1.)
-parser.add_argument('--loadingsparsity', 
-                    type=float, 
-                    default=1.)
 parser.add_argument('--maptype', 
                     type=str, 
                     choices=['unweighted', 'weighted', 'interactive'], 
@@ -55,13 +52,16 @@ parser.add_argument('--maptype',
 ## sampler parameters
 parser.add_argument('--iterations', 
                     type=int, 
-                    default=11000000)
+                    default=1100000)
 parser.add_argument('--burnin', 
                     type=int, 
-                    default=1000000)
+                    default=100000)
 parser.add_argument('--thinning', 
                     type=int, 
-                    default=10000)
+                    default=1000)
+
+## parse arguments
+args = parser.parse_args()
 
 
 ####################
@@ -73,7 +73,6 @@ def map_vals_to_indices(col, vals=[]):
     index_mapper = np.vectorize(lambda x: np.where(vals == x))
     
     return vals, index_mapper(col)
-
 
 #######
 ## data
@@ -88,7 +87,7 @@ num_of_verbs = len(verbs)
 likert_data = np.loadtxt(args.likertdata, 
                          delimiter=',', 
                          dtype=np.str,
-                         skiprows=1)[:,[0, 3, 4, 5]]
+                         skiprows=1)
 
 ## remove "know" from the likert data
 know_bool = np.logical_and(likert_data[:,1] != 'know', likert_data[:,2] != 'know')
@@ -99,7 +98,7 @@ _, likert_verb1_indices = map_vals_to_indices(likert_data[:,1], vals=verbs)
 _, likert_verb2_indices = map_vals_to_indices(likert_data[:,2], vals=verbs)
 likert_responses = likert_data[:,3].astype(int) - 1
 
-num_of_response_levels = np.unique(responses).max() + 1
+num_of_response_levels = np.unique(likert_responses).max() + 1
 num_of_likert_subjects = likert_subj_vals.shape[0]
 num_of_likert_observations = likert_data.shape[0]
 
@@ -108,7 +107,7 @@ num_of_likert_observations = likert_data.shape[0]
 triad_data = np.loadtxt(args.triaddata, 
                         delimiter=',', 
                         dtype=np.str, 
-                        skiprows=1)[:,[0,3,4,5,6]]
+                        skiprows=1)
 
 # subj, verb1, verb2, verb3, response_index
 
@@ -116,7 +115,7 @@ triad_subj_vals, triad_subj_indices = map_vals_to_indices(triad_data[:,0])
 _, triad_verb1_indices = map_vals_to_indices(triad_data[:,1], vals=verbs)
 _, triad_verb2_indices = map_vals_to_indices(triad_data[:,2], vals=verbs)
 _, triad_verb3_indices = map_vals_to_indices(triad_data[:,3], vals=verbs)
-triad_responses = triad_data[:,4]
+triad_responses = triad_data[:,4].astype(int)
 
 num_of_triad_subjects = triad_subj_vals.shape[0]
 num_of_triad_observations = triad_data.shape[0]
@@ -125,13 +124,16 @@ num_of_triad_observations = triad_data.shape[0]
 ## verb features
 
 with open(args.verbfeatures) as f:
-    verb_features_head = f.readline().strip().split()
+    verb_features_head = f.readline().strip().split(';')
     
 try:
-    assert np.all(np.array([verbs[i] == v for i, v in verb_features_head]))
+    assert np.all(np.array([verbs[i] == v for i, v in enumerate(verb_features_head)]))
+except AssertionError:
+    raise ValueError('Dude, the verbs need to be the same ones, in the same order')
 
 verb_features = np.loadtxt(args.verbfeatures,
                            dtype=np.float,
+                           delimiter=';',
                            skiprows=1).transpose()
 
 num_of_features = verb_features.shape[1]
@@ -141,9 +143,10 @@ num_of_features = verb_features.shape[1]
 ## mapping model
 ################
 
-Tau = (1./num_of_features) * np.identity(num_of_features)
-
 if args.maptype=='interactive':
+    Tau = np.identity(num_of_features) + 1./np.square(num_of_features)
+    np.fill_diagonal(Tau, 1./num_of_features)
+
     feature_weights_triad = pymc.Wishart(name='feature_weights_triad',
                                          n=num_of_features,
                                          Tau=Tau,
@@ -157,17 +160,34 @@ if args.maptype=='interactive':
                                           observed=False)
 
 elif args.maptype=='weighted':
-     feature_weights_triad = Tau * pymc.Chi2(name='feature_weights_triad',
-                                             n=num_of_features,
-                                             value=num_of_features*np.ones(num_of_features),
-                                             observed=False)
+    feature_weights_triad_diag = pymc.Chi2(name='feature_weights_triad_diag',
+                                           nu=num_of_features,
+                                           value=num_of_features*np.ones(num_of_features),
+                                           observed=False)
 
-    feature_weights_likert = Tau * pymc.Chi2(name='feature_weights_likert',
-                                             n=num_of_features,
-                                             value=num_of_features*np.ones(num_of_features),
-                                             observed=False)
+    feature_weights_likert_diag = pymc.Chi2(name='feature_weights_likert_diag',
+                                            nu=num_of_features,
+                                            value=num_of_features*np.ones(num_of_features),
+                                            observed=False)
+
+    @pymc.deterministic
+    def feature_weights_triad(weights=feature_weights_triad_diag):
+        weights_mat = np.zeros([num_of_features, num_of_features])
+        np.fill_diagonal(weights_mat, weights / num_of_features)
+
+        return weights_mat
+
+    @pymc.deterministic
+    def feature_weights_likert(weights=feature_weights_likert_diag):
+        weights_mat = np.zeros([num_of_features, num_of_features])
+        np.fill_diagonal(weights_mat, weights / num_of_features)
+
+        return weights_mat
+
 
 elif args.maptype=='unweighted':
+    Tau = (1./num_of_features) * np.identity(num_of_features)
+
     @pymc.deterministic
     def feature_weights_triad():
         return Tau
@@ -204,10 +224,10 @@ jump = pymc.Exponential(name='jump',
 @pymc.deterministic
 def prob_likert(jump=jump, similarity=similarity_likert):
     cumsums = np.cumsum(jump, axis=1)[likert_subj_indices]
-    cdfs = pymc.invlogit(cumsums - similarity[likert_verb1_indices, likert_verb2_indices])
+    cdfs = pymc.invlogit(cumsums - similarity[likert_verb1_indices, likert_verb2_indices, None])
 
-    zeros = np.zeros(cdfs.shape[0])
-    ones = np.ones(cdfs.shape[0])
+    zeros = np.zeros(cdfs.shape[0])[:,None]
+    ones = np.ones(cdfs.shape[0])[:,None]
 
     return np.append(cdfs, ones, axis=1) - np.append(zeros, cdfs, axis=1)
 
@@ -219,16 +239,25 @@ subj_sparsity_prior = pymc.Exponential(name='subj_sparsity_prior',
                                        value=sp.stats.expon.rvs(1., size=3),
                                        observed=False)
 
+@pymc.deterministic(trace=False)
+def subj_sparsity_prior_tile(subj_sparsity_prior=subj_sparsity_prior):
+    return np.tile(subj_sparsity_prior, [num_of_triad_subjects, 1])
+
 subj_sparsity = pymc.Exponential(name='subj_sparsity',
-                                 beta=subj_sparsity_prior,
+                                 beta=subj_sparsity_prior_tile,
                                  value=sp.stats.expon.rvs(1., size=[num_of_triad_subjects, 3]),
                                  observed=False)
 
+triad_similarity_smoothing = pymc.Exponential(name='triad_similarity_smoothing',
+                                              beta=1.,
+                                              value=sp.stats.expon.rvs(1.),
+                                              observed=False)
+
 @pymc.deterministic
-def triad_params(sparsity=subj_sparsity, similarity=similarity_triad):
-    np.array([sparsity[subj_ind_triad, 0]*similarity[v4_ind, v5_ind], 
-              sparsity[subj_ind_triad, 1]*similarity[v3_ind, v5_ind], 
-              sparsity[subj_ind_triad, 2]*similarity[v3_ind, v4_ind]]).transpose()
+def triad_params(sparsity=subj_sparsity, similarity=similarity_triad, smoothing=triad_similarity_smoothing):
+    return np.array([sparsity[triad_subj_indices, 0]*(similarity[triad_verb2_indices, triad_verb3_indices] + smoothing), 
+                     sparsity[triad_subj_indices, 1]*(similarity[triad_verb1_indices, triad_verb3_indices] + smoothing), 
+                     sparsity[triad_subj_indices, 2]*(similarity[triad_verb1_indices, triad_verb2_indices] + smoothing)]).transpose()
 
 prob_triad = pymc.Dirichlet(name='prob_triad',
                             theta=triad_params,
@@ -236,7 +265,7 @@ prob_triad = pymc.Dirichlet(name='prob_triad',
                                                       size=num_of_triad_observations)[:,:2],
                             observed=False)
 
-prob_triad_completed = pymc.Lambda(name='prob_triad_completed_'+test_verb,
+prob_triad_completed = pymc.Lambda(name='prob_triad_completed',
                                    lam_fun=lambda prob_triad=prob_triad: np.append(prob_triad, 1-np.sum(prob_triad, axis=1)[:,None], axis=1))
 
 
@@ -265,28 +294,116 @@ model.sample(iter=args.iterations, burn=args.burnin, thin=args.thinning)
 deviance_trace = model.trace('deviance')()
 minimum_index = np.where(deviance_trace == deviance_trace.min())[0][0]
 
-triad_prediction = np.argmax(prob_triad_completed.trace()[minimum_index], axis=1)
-likert_prediction = np.argmax(prob_likert.trace()[minimum_index], axis=1)
-
+## get best kernel
 kernel_triad_best = model.feature_weights_triad.trace()[minimum_index]
 kernel_likert_best = model.feature_weights_likert.trace()[minimum_index]
 
+## get best similarity
 similarity_triad_best = model.similarity_triad.trace()[minimum_index]
 similarity_likert_best = model.similarity_likert.trace()[minimum_index]
 
-np.savetxt('crossvalidation/prediction/prediction_triad_'+test_verb+'.csv', triad_prediction)
-np.savetxt('crossvalidation/prediction/prediction_likert_'+test_verb+'.csv', likert_prediction)
-
-np.savetxt('crossvalidation/feature_weights/feature_weights_triad_'+test_verb+'.csv', sp.linalg.cholesky(kernel_triad_best))
-np.savetxt('crossvalidation/feature_weights/feature_weights_likert_'+test_verb+'.csv', sp.linalg.cholesky(kernel_likert_best))
-
-np.savetxt('crossvalidation/similarity/similarity_triad_'+test_verb+'.csv', similarity_triad_best)
-np.savetxt('crossvalidation/similarity/similarity_likert_'+test_verb+'.csv', similarity_likert_best)
+## get best random effects
+jump_best = model.jump.trace()[minimum_index]
+subj_sparsity_best = model.subj_sparsity.trace()[minimum_index]
 
 ##
 
-likert_test_boolean = np.logical_not(likert_training_boolean)
-triad_test_boolean = np.logical_not(triad_training_boolean)
+triad_prediction = np.argmax(prob_triad_completed.trace()[minimum_index], axis=1)[triad_training_boolean]
+likert_prediction = np.argmax(prob_likert.trace()[minimum_index], axis=1)[likert_training_boolean]
 
-prob_likert.trace()[:, likert_test_boolean, likert_responses[likert_test_boolean]]
-prob_triad_completed.trace()[:, triad_test_boolean, triad_responses[triad_test_boolean]]
+triad_real = triad_data[triad_training_boolean,4].astype(int)
+
+triad_confusion = confusion_matrix(triad_data[triad_training_boolean,triad_real+1], 
+                                   triad_data[triad_training_boolean,triad_prediction+1],
+                                   labels=verbs)
+
+##
+
+if args.output:
+    model_dir = args.output
+
+    if args.testverb != 'all':
+        model_dir = os.path.join(model_dir, 'crossvalidation')
+
+        likert_test_boolean = np.logical_not(likert_training_boolean)
+        triad_test_boolean = np.logical_not(triad_training_boolean)
+
+        triad_test_ppd = prob_triad_completed.trace()[:, triad_test_boolean, triad_responses[triad_test_boolean]].mean(axis=0)
+        likert_test_ppd = prob_likert.trace()[:, likert_test_boolean, likert_responses[likert_test_boolean]].mean(axis=0)
+
+        triad_test_lppd = np.log(triad_test_ppd)
+        likert_test_lppd = np.log(likert_test_ppd)
+
+        triad_validation = np.vstack([np.repeat([args.maptype], triad_test_lppd.shape[0]), 
+                                      np.repeat(['triad'], triad_test_lppd.shape[0]), 
+                                      np.repeat([args.testverb], triad_test_lppd.shape[0]),
+                                      np.array(verbs)[triad_verb1_indices[triad_test_boolean]], 
+                                      np.array(verbs)[triad_verb2_indices[triad_test_boolean]], 
+                                      np.array(verbs)[triad_verb3_indices[triad_test_boolean]],
+                                      triad_test_lppd]).T
+        likert_validation = np.vstack([np.repeat([args.maptype], likert_test_lppd.shape[0]), 
+                                       np.repeat(['likert'], likert_test_lppd.shape[0]), 
+                                       np.repeat([args.testverb], likert_test_lppd.shape[0]),
+                                       np.array(verbs)[likert_verb1_indices[likert_test_boolean]], 
+                                       np.array(verbs)[likert_verb2_indices[likert_test_boolean]], 
+                                       np.array(verbs)[likert_verb2_indices[likert_test_boolean]], 
+                                       likert_test_lppd]).T
+
+        validation = np.vstack([triad_validation, likert_validation])
+
+        with open(os.path.join(model_dir, 'test_lppd_'+args.maptype+'_'+args.testverb+'.csv'), 'a') as f:
+            np.savetxt(f, validation, delimiter=';', fmt="%s")
+
+
+    else:
+        with open(os.path.join(args.output, 'waic'), 'a') as f:
+            ## triad
+            prob_trace = construct_prob_trace(trace=prob_triad_completed.trace(), responses=triad_responses)
+            lppd = compute_lppd(prob_trace=prob_trace)
+            waic = compute_waic(prob_trace=prob_trace)
+        
+            f.write(','.join([args.maptype, 'triad', str(lppd), str(waic)])+'\n')
+
+            ## likert
+            prob_trace = construct_prob_trace(trace=prob_likert.trace(), responses=likert_responses)
+            lppd = compute_lppd(prob_trace=prob_trace)
+            waic = compute_waic(prob_trace=prob_trace)
+        
+            f.write(','.join([args.maptype, 'likert', str(lppd), str(waic)])+'\n')
+
+    np.savetxt(os.path.join(model_dir, 'prediction_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
+               triad_prediction,
+               delimiter=';')
+    np.savetxt(os.path.join(model_dir, 'prediction_likert_'+args.maptype+'_'+args.testverb+'.csv'), 
+               likert_prediction,
+               delimiter=';')
+
+    np.savetxt(os.path.join(model_dir, 'feature_weights_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
+               sp.linalg.cholesky(kernel_triad_best),
+               delimiter=';')
+    np.savetxt(os.path.join(model_dir, 'feature_weights_likert_'+args.maptype+'_'+args.testverb+'.csv'), 
+               sp.linalg.cholesky(kernel_likert_best),
+               delimiter=';')
+
+    np.savetxt(os.path.join(model_dir, 'similarity_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
+               similarity_triad_best,
+               delimiter=';')
+    np.savetxt(os.path.join(model_dir, 'similarity_likert_'+args.maptype+'_'+args.testverb+'.csv'), 
+               similarity_likert_best,
+               header=';'.join(verbs),
+               delimiter=';',
+               comments='')
+
+    np.savetxt(os.path.join(model_dir, 'jump_'+str(args.maptype)+'.csv'), 
+               jump_best.transpose(), 
+               header=';'.join(likert_subj_vals),  
+               delimiter=';',
+               comments='')
+
+    np.savetxt(os.path.join(model_dir, 'subj_sparsity_'+str(args.maptype)+'.csv'), 
+               subj_sparsity_best.transpose(), 
+               header=';'.join(triad_subj_vals),  
+               delimiter=';',
+               comments='')
+
+    
