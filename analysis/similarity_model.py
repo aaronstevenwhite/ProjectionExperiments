@@ -38,15 +38,24 @@ parser.add_argument('--output',
                     default='./model/similarity_model')
 
 ## model hyperparameters
-parser.add_argument('--featurenum', 
-                    type=int, 
-                    default=10)
 parser.add_argument('--maptype', 
                     type=str, 
                     choices=['unweighted', 'weighted', 'interactive'], 
                     default='unweighted')
 
 ## parameter initialization
+parser.add_argument('--loadmappings', 
+                    nargs='?',
+                    const=True,
+                    default=False)
+parser.add_argument('--loadjump', 
+                    nargs='?',
+                    const=True,
+                    default=False)
+parser.add_argument('--loadsubjsparsity', 
+                    nargs='?',
+                    const=True,
+                    default=False)
 
 
 ## sampler parameters
@@ -138,55 +147,100 @@ verb_features = np.loadtxt(args.verbfeatures,
 
 num_of_features = verb_features.shape[1]
 
+###########################
+## initialization functions
+###########################
+
+def initialize_mapping(data):
+    Tau = 1./num_of_features * np.identity(num_of_features)
+
+    if args.loadmappings:
+        if data == 'triad':
+            return np.loadtxt(os.path.join(args.output, 'feature_weights_triad_'+args.maptype+'_all.csv'), 
+                              delimiter=';', 
+                              dtype=np.float, 
+                              ndmin=2)
+
+        else:
+            return np.loadtxt(os.path.join(args.output, 'feature_weights_likert_'+args.maptype+'_all.csv'), 
+                              delimiter=';', 
+                              dtype=np.float, 
+                              ndmin=2)
+        
+    else:
+        return Tau
+
+
+def initialize_jump():
+    if args.loadjump:
+        return np.loadtxt(os.path.join(args.output, 'jump_'+str(args.maptype)+'.csv'),
+                          delimiter=';', 
+                          dtype=np.float, 
+                          skiprows=1).transpose()
+
+    else:
+        return sp.stats.expon.rvs(scale=1.,
+                                  size=(num_of_subjects,
+                                        num_of_response_levels-1))
+
+def initialize_subj_sparsity():
+    if args.loadsubjsparsity:
+        return np.loadtxt(os.path.join(args.output, 'subj_sparsity_'+str(args.maptype)+'.csv'),
+                          delimiter=';', 
+                          dtype=np.float, 
+                          skiprows=1).transpose()
+
+    else:
+        return sp.stats.expon.rvs(1., size=[num_of_triad_subjects, 3])
+
 
 ################
 ## mapping model
 ################
 
-if args.maptype=='interactive':
-    Tau = np.identity(num_of_features) + 1./np.square(num_of_features)
-    np.fill_diagonal(Tau, 1./num_of_features)
+Tau = 1./num_of_features * np.identity(num_of_features)
 
+if args.maptype=='interactive':
     feature_weights_triad = pymc.Wishart(name='feature_weights_triad',
                                          n=num_of_features,
                                          Tau=Tau,
-                                         value=Tau,
+                                         value=initialize_mapping('triad'),
                                          observed=False)
 
     feature_weights_likert = pymc.Wishart(name='feature_weights_likert',
                                           n=num_of_features,
                                           Tau=Tau,
-                                          value=Tau,
+                                          value=initialize_mapping('likert'),
                                           observed=False)
 
 elif args.maptype=='weighted':
-    feature_weights_triad_diag = pymc.Chi2(name='feature_weights_triad_diag',
-                                           nu=num_of_features,
-                                           value=num_of_features*np.ones(num_of_features),
-                                           observed=False)
+    feature_weights_triad_raw = pymc.Wishart(name='feature_weights_triad_raw',
+                                             n=num_of_features,
+                                             Tau=Tau,
+                                             value=initialize_mapping('triad'),
+                                             observed=False)
 
-    feature_weights_likert_diag = pymc.Chi2(name='feature_weights_likert_diag',
-                                            nu=num_of_features,
-                                            value=num_of_features*np.ones(num_of_features),
-                                            observed=False)
+    feature_weights_likert_raw = pymc.Wishart(name='feature_weights_likert_raw',
+                                              n=num_of_features,
+                                              Tau=Tau,
+                                              value=initialize_mapping('likert'),
+                                              observed=False)
 
     @pymc.deterministic
-    def feature_weights_triad(weights=feature_weights_triad_diag):
+    def feature_weights_triad(weights=feature_weights_triad_raw):
         weights_mat = np.zeros([num_of_features, num_of_features])
-        np.fill_diagonal(weights_mat, weights / num_of_features)
+        np.fill_diagonal(weights_mat, np.diag(weights))
 
         return weights_mat
 
     @pymc.deterministic
-    def feature_weights_likert(weights=feature_weights_likert_diag):
+    def feature_weights_likert(weights=feature_weights_likert_raw):
         weights_mat = np.zeros([num_of_features, num_of_features])
-        np.fill_diagonal(weights_mat, weights / num_of_features)
+        np.fill_diagonal(weights_mat, np.diag(weights))
 
         return weights_mat
-
 
 elif args.maptype=='unweighted':
-    Tau = (1./num_of_features) * np.identity(num_of_features)
 
     @pymc.deterministic
     def feature_weights_triad():
@@ -201,11 +255,13 @@ elif args.maptype=='unweighted':
 
 @pymc.deterministic
 def similarity_triad(w=feature_weights_triad):
-    return np.dot(np.dot(verb_features, w), verb_features.transpose())
+    sim = np.dot(np.dot(verb_features, w), verb_features.transpose())
+    return sim - np.min(sim)
 
 @pymc.deterministic
 def similarity_likert(w=feature_weights_likert):
-    return np.dot(np.dot(verb_features, w), verb_features.transpose())
+    sim = np.dot(np.dot(verb_features, w), verb_features.transpose())
+    return sim - np.min(sim)
 
 ## ordinal regression model (likert scale similarity)
 
@@ -245,19 +301,14 @@ def subj_sparsity_prior_tile(subj_sparsity_prior=subj_sparsity_prior):
 
 subj_sparsity = pymc.Exponential(name='subj_sparsity',
                                  beta=subj_sparsity_prior_tile,
-                                 value=sp.stats.expon.rvs(1., size=[num_of_triad_subjects, 3]),
+                                 value=initialize_subj_sparsity(),
                                  observed=False)
 
-triad_similarity_smoothing = pymc.Exponential(name='triad_similarity_smoothing',
-                                              beta=1.,
-                                              value=sp.stats.expon.rvs(1.),
-                                              observed=False)
-
 @pymc.deterministic
-def triad_params(sparsity=subj_sparsity, similarity=similarity_triad, smoothing=triad_similarity_smoothing):
-    return np.array([sparsity[triad_subj_indices, 0]*(similarity[triad_verb2_indices, triad_verb3_indices] + smoothing), 
-                     sparsity[triad_subj_indices, 1]*(similarity[triad_verb1_indices, triad_verb3_indices] + smoothing), 
-                     sparsity[triad_subj_indices, 2]*(similarity[triad_verb1_indices, triad_verb2_indices] + smoothing)]).transpose()
+def triad_params(sparsity=subj_sparsity, similarity=similarity_triad):
+    return np.array([sparsity[triad_subj_indices, 0]*(similarity[triad_verb2_indices, triad_verb3_indices]+1e-10), 
+                     sparsity[triad_subj_indices, 1]*(similarity[triad_verb1_indices, triad_verb3_indices]+1e-10), 
+                     sparsity[triad_subj_indices, 2]*(similarity[triad_verb1_indices, triad_verb2_indices]+1e-10)]).transpose()
 
 prob_triad = pymc.Dirichlet(name='prob_triad',
                             theta=triad_params,
@@ -379,10 +430,10 @@ if args.output:
                delimiter=';')
 
     np.savetxt(os.path.join(model_dir, 'feature_weights_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
-               sp.linalg.cholesky(kernel_triad_best),
+               kernel_triad_best,
                delimiter=';')
     np.savetxt(os.path.join(model_dir, 'feature_weights_likert_'+args.maptype+'_'+args.testverb+'.csv'), 
-               sp.linalg.cholesky(kernel_likert_best),
+               kernel_likert_best,
                delimiter=';')
 
     np.savetxt(os.path.join(model_dir, 'similarity_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
