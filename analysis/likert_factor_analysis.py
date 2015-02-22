@@ -26,6 +26,10 @@ parser.add_argument('--output',
                     default='./model/likert_factor_analysis')
 
 ## model hyperparameters
+parser.add_argument('--featureform', 
+                    type=str, 
+                    choices=['discrete', 'continuous'], 
+                    default='discrete')
 parser.add_argument('--featurenum', 
                     type=int, 
                     default=10)
@@ -80,6 +84,10 @@ parser.add_argument('--thinning',
 ## parse arguments
 args = parser.parse_args()
 
+## filter bad parameter sets
+if args.featureform == 'continuous' and args.nonparametric:
+    raise NotImplementedError('hierarchical beta process feature prior not implemented')
+
 ####################
 ## utility functions
 ####################
@@ -128,7 +136,14 @@ def initialize_verb_features():
                           skiprows=1,
                           ndmin=2).transpose()
     else:
-        return sp.stats.bernoulli.rvs(.1, size=[num_of_verbs, args.featurenum])
+        if args.featureform == 'discrete':
+            return sp.stats.bernoulli.rvs(float(args.featuresparsity)/args.featurenum, 
+                                          size=[num_of_verbs, args.featurenum])
+        elif args.featureform == 'continuous':
+            return sp.stats.beta.rvs(float(args.featuresparsity)/args.featurenum, 
+                                     1., 
+                                     size=[num_of_verbs, args.featurenum])
+        
 
 def initialize_feature_loadings():
     if args.loadfeatureloadings:
@@ -179,13 +194,22 @@ def initialize_item():
 
 ## feature model
 
-feature_prob = pymc.Beta(name='feature_prob',
-                         alpha=args.featuresparsity,
-                         beta=1.,
-                         value=sp.stats.beta.rvs(a=args.featuresparsity,
-                                                 b=1., 
-                                                 size=args.featurenum),
-                         observed=False)
+if args.featureform == 'discrete':
+    feature_prob = pymc.Beta(name='feature_prob',
+                             alpha=float(args.featuresparsity)/args.featurenum,
+                             beta=1.,
+                             value=sp.stats.beta.rvs(a=float(args.featuresparsity)/args.featurenum,
+                                                     b=1., 
+                                                     size=args.featurenum),
+                             observed=False)
+
+elif args.featureform == 'continuous':
+    feature_prob = pymc.Exponential(name='feature_prob',
+                                    beta=args.featurenum/float(args.featuresparsity),
+                                    value=sp.stats.expon.rvs(args.featurenum/float(args.featuresparsity),
+                                                             size=args.featurenum),
+                                    observed=False)
+
 
 
 if args.nonparametric:
@@ -203,17 +227,23 @@ if args.nonparametric:
                                    observed=False)
 
 else:
-
     @pymc.deterministic(trace=False)
     def feature_prob_tile(probs=feature_prob):
         return np.tile(probs, (num_of_verbs,1))
 
+    if args.featureform == 'discrete':
+        verb_features = pymc.Bernoulli(name='verb_features',
+                                       p=feature_prob_tile,
+                                       value=initialize_verb_features(),
+                                       observed=False)
     
-    verb_features = pymc.Bernoulli(name='verb_features',
-                                   p=feature_prob_tile,
-                                   value=initialize_verb_features(),
-                                   observed=False)
-    
+    elif args.featureform == 'continuous':
+        verb_features = pymc.Beta(name='verb_features',
+                                  alpha=feature_prob_tile,
+                                  beta=np.ones([num_of_verbs, args.featurenum]),
+                                  value=initialize_verb_features(),
+                                  observed=False)
+
 
 ## projection model
 
@@ -340,31 +370,39 @@ if args.includeitemrandom:
 
 ## write output
 if args.output:
-    np.savetxt(os.path.join(args.output, 'verbfeatures_'+str(args.featurenum)+'.csv'), 
+    np.savetxt(os.path.join(args.output,
+                            args.featureform,
+                            'verbfeatures_'+args.featureform+'_'+str(args.featurenum)+'.csv'), 
                verb_features_best.transpose(), 
                header=';'.join(verb_vals),
                delimiter=';',
                comments='',
                fmt="%d")
-    np.savetxt(os.path.join(args.output, 'featureloadings_'+str(args.featurenum)+'.csv'), 
+    np.savetxt(os.path.join(args.output, 
+                            args.featureform,
+                            'featureloadings_'+args.featureform+'_'+str(args.featurenum)+'.csv'), 
                feature_loadings_best, 
                header=';'.join(frame_vals),
                delimiter=';',
                comments='')
-    np.savetxt(os.path.join(args.output, 'jump_'+str(args.featurenum)+'.csv'), 
+    np.savetxt(os.path.join(args.output,
+                            args.featureform,
+                            'jump_'+args.featureform+'_'+str(args.featurenum)+'.csv'), 
                jump_best.transpose(), 
                header=';'.join(subj_vals),  
                delimiter=';',
                comments='')
 
     if args.includeitemrandom:
-        np.savetxt(os.path.join(args.output, 'item_'+str(args.featurenum)+'.csv'), 
+        np.savetxt(os.path.join(args.output,
+                                args.featureform,
+                                'item_'+args.featureform+'_'+str(args.featurenum)+'.csv'), 
                    item_best[None,:], 
                    header=';'.join(item_vals.astype(str)),  
                    delimiter=';',
                    comments='')
 
-    with open(os.path.join(args.output, 'waic'), 'a') as f:
+    with open(os.path.join(args.output, 'waic_'+args.featureform), 'a') as f:
         prob_trace = construct_prob_trace(trace=prob_likert.trace(), responses=responses)
         lppd = compute_lppd(prob_trace=prob_trace)
         waic = compute_waic(prob_trace=prob_trace)

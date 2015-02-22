@@ -21,6 +21,9 @@ parser = argparse.ArgumentParser(description='Load data and run similarity model
 parser.add_argument('--verbs', 
                     type=str, 
                     default='../materials/triad/verbs.list')
+# parser.add_argument('--frequency', 
+#                     type=str, 
+#                     default='../analysis/freq.csv')
 parser.add_argument('--testverb', 
                     type=str, 
                     default='all')
@@ -438,9 +441,17 @@ if args.output:
 
     np.savetxt(os.path.join(model_dir, 'similarity_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
                similarity_triad_best,
-               delimiter=';')
+               header=';'.join(verbs),
+               delimiter=';',
+               comments='')
     np.savetxt(os.path.join(model_dir, 'similarity_likert_'+args.maptype+'_'+args.testverb+'.csv'), 
                similarity_likert_best,
+               header=';'.join(verbs),
+               delimiter=';',
+               comments='')
+
+    np.savetxt(os.path.join(model_dir, 'confusion_triad_'+args.maptype+'_'+args.testverb+'.csv'), 
+               triad_confusion,
                header=';'.join(verbs),
                delimiter=';',
                comments='')
