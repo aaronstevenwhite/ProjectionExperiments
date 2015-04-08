@@ -8,6 +8,8 @@ plots.dir <- paste(analysis.dir, 'plots/', sep='')
 
 setwd(analysis.dir)
 
+set.seed(4621)
+
 ###############
 # load packages
 ###############
@@ -20,6 +22,12 @@ library(MASS)
 
 ## heteroscedasticity tests
 library(lmtest)
+
+## Gini
+library(ineq)
+
+## generalized linear models
+library(MCMCglmm)
 
 ## plotting
 library(ggplot2)
@@ -181,8 +189,8 @@ feature.counts <- ddply(verb.features, .(feature), summarise, featuresum=sum(val
 feature.order <- feature.counts$feature[order(feature.counts$featuresum)]
 
 #### loading gini-based order
-#feature.gini <- summarize(group_by(feature.loadings, feature), 
-#                          gini=ineq(value, type="Gini"))
+feature.gini <- summarize(group_by(feature.loadings, feature), 
+                          gini=ineq(value, type="Gini"))
 #feature.order <- feature.gini[order(feature.gini$gini),'feature']
 
 ## order verbs and frames
@@ -209,6 +217,17 @@ p.feature.loadings.frame <- ggplot(feature.loadings, aes(x=feature.ordered, y=fr
 ## uncomment to produce tikz graph
 # tikz(paste(plots.dir, 'verbfeaturesnonnegative.tikz', sep=''), width=6, height=4)
 # p.verb.features.frame
+# dev.off()
+
+acceptability.jump <- read.csv("~/experiments/ProjectionExperiments/analysis/model/likert_factor_analysis/discrete/jump_14.csv", sep=";")
+acceptability.jump$jump <- 1:6
+acceptability.jump <- melt(acceptability.jump, id='jump')
+
+p.acceptability.jump <- ggplot(acceptability.jump, aes(x=factor(jump), y=value, group=variable)) + geom_line(alpha=.1) + geom_boxplot(data=likert.jump, aes(x=factor(jump), y=value), inherit.aes=F, fill="grey") + scale_x_discrete(name='Rating') + scale_y_continuous(name='Acceptability interval size', breaks=0:6)
+
+## uncomment to produce tikz graph
+# tikz(paste(plots.dir, 'acceptabilityinterval.tikz', sep=''), width=6, height=4)
+# p.acceptability.jump
 # dev.off()
 
 ##################
@@ -311,9 +330,9 @@ compute.similarity.likert <- function(likert){
 
 similarity.likert <- compute.similarity.likert(likert)
 similarity.likert <- rbind(similarity.likert,
-                           data.frame(verb0=levels(likert.mean$verb0), 
-                                      verb1=levels(likert.mean$verb0), 
-                                      mean.response=max(likert.mean$response)))
+                           data.frame(verb0=levels(similarity.likert$verb0), 
+                                      verb1=levels(similarity.likert$verb0), 
+                                      mean.response=max(similarity.likert$response)))
                            
 
 p.likert.raw <- ggplot(similarity.likert, aes(x=ordered(similarity.likert$verb0, levels=rev(c(verb.order[1:22], 'know', verb.order[23:30]))), y=ordered(similarity.likert$verb1, levels=c(verb.order[1:22], 'know', verb.order[23:30])), fill=mean.response)) + geom_tile(color="white") + scale_fill_gradient2(name='Similarity', low="white", high="black", breaks=seq(1,7)) + scale_x_discrete(name=element_blank()) + scale_y_discrete(name=element_blank()) + theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1, size=8), axis.text.y = element_text(size=8), axis.ticks=element_blank(), panel.grid=element_blank(), panel.border=element_blank(), legend.position="none")
@@ -416,4 +435,184 @@ p.dist.frame.sim <- ggplot(dist.frame.sim, aes(x=frame.norm, y=sim.norm, shape=M
 ###############################
 
 ## reload verb features 
-verb.features <- read.csv(paste(analysis.dir, 'model/likert_factor_analysis/discrete/verbfeatures_14.csv', sep=''), sep=";")
+verb.features <- t(read.csv(paste(analysis.dir, 'model/likert_factor_analysis/discrete/verbfeatures_14.csv', sep=''), sep=";"))
+
+dist.feature <- as.matrix(dist(verb.features, method="manhattan"))[verb.order, verb.order]
+
+mantel(dist.feature, as.matrix(dist.triad)[verb.order, verb.order], method='spearman', permutations=10000)
+mantel(dist.feature, as.matrix(dist.likert)[verb.order, verb.order], method='spearman', permutations=10000)
+
+##################
+## feature weights
+##################
+
+triad.feature.weights <- read.table("~/experiments/ProjectionExperiments/analysis/model/similarity_model/feature_weights_triad_weighted_diffusion_all.csv", quote="\"")
+triad.feature.weights$feature <- 1:nrow(triad.feature.weights)
+triad.feature.weights$feature.ordered <- ordered(triad.feature.weights$feature, levels=feature.order)
+
+p.triad.feature.weight <- ggplot(triad.feature.weights, aes(x=feature.ordered, y=V1)) + geom_bar(stat="identity", fill="grey", color="black") + geom_hline(yintercept=0) + scale_x_discrete(name='', labels=1:14) + scale_y_continuous(name='Feature weight') + theme(axis.ticks=element_blank())
+
+# tikz(paste(plots.dir, 'triadfeatureweight.tikz', sep=''), width=6, height=4)
+# p.triad.feature.weight
+# dev.off()
+
+triad.frame.weights <- merge(triad.feature.weights, feature.loadings)
+triad.frame.weights <- summarize(group_by(triad.frame.weights, 'frame'), frame.gini=ineq(value, type="Gini"), weighted.frame.gini.increase=ineq(V1*value, type="Gini")-frame.gini)
+triad.frame.weights.melt <- melt(triad.frame.weights, id='frame')
+triad.frame.weights.melt$frame.ordered <- ordered(triad.frame.weights.melt$frame, levels=triad.frame.weights$frame[order(triad.frame.weights$frame.gini+triad.frame.weights$weighted.frame.gini.increase)])
+
+p.triad.frame.weight <- ggplot(triad.frame.weights.melt, aes(x=frame.ordered, y=value, fill=variable)) + geom_bar(stat="identity",  color="black") + scale_fill_grey(name='Measure') + geom_hline(yintercept=0) + scale_x_discrete(name='') + coord_flip() + scale_y_continuous(name='Gini coefficient') + theme(axis.text.x = element_text(size=6), axis.text.y = element_text(size=6), axis.ticks=element_blank(), legend.position="none") 
+
+# tikz(paste(plots.dir, 'triadfeatureweight.tikz', sep=''), width=6, height=4)
+# p.triad.feature.weight
+# dev.off()
+
+# tikz(paste(plots.dir, 'triadframepower.tikz', sep=''), width=6, height=4)
+# p.triad.frame.weight
+# dev.off()
+
+triad.frame.weights <- merge(triad.feature.weights, feature.loadings)
+triad.frame.weights <- summarize(group_by(triad.frame.weights, 'frame'), frame.gini=ineq(value, type="Gini"), weighted.frame.gini=ineq(V1*value, type="Gini"))
+triad.frame.weights$weighted.frame.gini.increase <- triad.frame.weights$weighted.frame.gini - triad.frame.weights$frame.gini
+triad.frame.weights.melt <- melt(triad.frame.weights[c('frame', 'frame.gini', 'weighted.frame.gini.increase')], id='frame')
+triad.frame.weights.melt$frame.ordered <- ordered(triad.frame.weights.melt$frame, levels=triad.frame.weights$frame[order(triad.frame.weights$weighted.frame.gini)])
+
+feature.loadings.cast <- as.matrix(cast(feature.loadings, feature ~ frame, value='value'))
+
+gini <- function(x, y) ineq(x * y)
+pr_DB$set_entry(FUN = gini, names = c("gini"))
+
+triad.loadings.weighted <- triad.feature.weights$V1*feature.loadings.cast
+triad.gini.1 <- as.data.frame(apply(triad.feature.weights$V1*feature.loadings.cast, 2, ineq))
+triad.gini.1$frame <- rownames(triad.gini.1)
+
+triad.gini.2 <- subset(melt(as.matrix(dist(t(as.matrix(triad.loadings.weighted)), method="gini"))), X1!=X2)
+
+triad.gini.both <- merge(merge(triad.gini.2, triad.gini.1, by.x='X1', by.y='frame'), triad.gini.1, by.x='X2', by.y='frame')
+names(triad.gini.both) <- c('frame1', 'frame2', 'gini2', 'gini11', 'gini12')
+
+triad.gini.both$gini.residual <- triad.gini.both$gini2 - predict(betareg(gini2 ~ logit(gini11)*logit(gini12), data=triad.gini.both))
+
+triad.gini.both$frame1.ordered <- ordered(triad.gini.both$frame1, levels=triad.frame.weights$frame[rev(order(triad.frame.weights$weighted.frame.gini))])
+triad.gini.both$frame2.ordered <- ordered(triad.gini.both$frame2, levels=triad.frame.weights$frame[order(triad.frame.weights$weighted.frame.gini)])
+
+p.triad.gini.increase <- ggplot(triad.gini.both, aes(x=frame1.ordered, y=frame2.ordered, fill=gini.residual)) + geom_tile(color="black") + scale_fill_gradient2(high = "black", mid="white", low="orange") + theme(axis.title=element_blank(), axis.text.x = element_text(size=6,angle=45,hjust=1), axis.text.y = element_text(size=6), axis.ticks=element_blank(), panel.grid=element_blank(), panel.border=element_blank(), legend.position="none")
+
+# tikz(paste(plots.dir, 'triadginiinformationgain.tikz', sep=''), width=6, height=4)
+# p.triad.gini.increase
+# dev.off()
+
+p.triad.frame.weight <- ggplot(triad.frame.weights.melt, aes(x=frame.ordered, y=value, fill=variable)) + geom_bar(stat="identity",  color="black") + scale_fill_grey(name='Measure') + geom_hline(yintercept=0) + scale_x_discrete(name='') + coord_flip() + scale_y_continuous(name='Discriminative power (Gini)') + theme(axis.text.x = element_text(size=6), axis.text.y = element_text(size=6), axis.ticks=element_blank(), legend.position="none") 
+
+# tikz(paste(plots.dir, 'triadframepower.tikz', sep=''), width=6, height=4)
+# p.triad.frame.weight
+# dev.off()
+
+
+likert.feature.weights <- read.table("~/experiments/ProjectionExperiments/analysis/model/similarity_model/feature_weights_likert_weighted_linear_all.csv", quote="\"")
+likert.feature.weights$feature <- 1:nrow(likert.feature.weights)
+likert.feature.weights$feature.ordered <- ordered(likert.feature.weights$feature, levels=feature.order)
+
+
+p.likert.feature.weight <- ggplot(likert.feature.weights, aes(x=feature.ordered, y=V1)) + geom_bar(stat="identity", fill="grey", color="black") + geom_hline(yintercept=0) + scale_x_discrete(name='', labels=1:14) + scale_y_continuous(name='Feature weight') + theme(axis.ticks=element_blank())
+
+# tikz(paste(plots.dir, 'likertfeatureweight.tikz', sep=''), width=6, height=4)
+# p.likert.feature.weight
+# dev.off()
+
+likert.frame.weights <- merge(likert.feature.weights, feature.loadings)
+likert.frame.weights <- summarize(group_by(likert.frame.weights, 'frame'), frame.gini=ineq(value, type="Gini"), weighted.frame.gini.increase=ineq(V1*value, type="Gini")-frame.gini)
+likert.frame.weights.melt <- melt(likert.frame.weights, id='frame')
+likert.frame.weights.melt$frame.ordered <- ordered(likert.frame.weights.melt$frame, levels=likert.frame.weights$frame[order(likert.frame.weights$frame.gini+likert.frame.weights$weighted.frame.gini.increase)])
+
+p.likert.frame.weight <- ggplot(likert.frame.weights.melt, aes(x=frame.ordered, y=value, fill=variable)) + geom_bar(stat="identity",  color="black") + scale_fill_grey(name='Measure') + geom_hline(yintercept=0) + scale_x_discrete(name='') + coord_flip() + scale_y_continuous(name='Gini coefficient') + theme(axis.text.x = element_text(size=8), axis.text.y = element_text(size=8), axis.ticks=element_blank(), legend.position="none") 
+
+# tikz(paste(plots.dir, 'likertframepower.tikz', sep=''), width=6, height=4)
+# p.likert.frame.weight
+# dev.off()
+
+likert.loadings.weighted <- likert.feature.weights$V1*feature.loadings.cast
+likert.gini.1 <- as.data.frame(apply(likert.feature.weights$V1*feature.loadings.cast, 2, ineq))
+likert.gini.1$frame <- rownames(likert.gini.1)
+
+likert.gini.2 <- subset(melt(as.matrix(dist(t(as.matrix(likert.loadings.weighted)), method="gini"))), X1!=X2)
+
+likert.gini.both <- merge(merge(likert.gini.2, likert.gini.1, by.x='X1', by.y='frame'), likert.gini.1, by.x='X2', by.y='frame')
+names(likert.gini.both) <- c('frame1', 'frame2', 'gini2', 'gini11', 'gini12')
+
+likert.gini.both$gini.residual <- likert.gini.both$gini2 - predict(betareg(gini2 ~ logit(gini11)*logit(gini12), data=likert.gini.both))
+
+p.likert.gini.increase <- ggplot(likert.gini.both, aes(x=frame1, y=frame2, fill=gini.residual)) + geom_tile(color="black") + scale_fill_gradient2(high = "black", mid="white", low="orange") + theme(axis.title=element_blank(), axis.text.x = element_text(size=6,angle=45,hjust=1), axis.text.y = element_text(size=6), axis.ticks=element_blank(), panel.grid=element_blank(), panel.border=element_blank(), legend.position="none")
+
+# tikz(paste(plots.dir, 'likertginiinformationgain.tikz', sep=''), width=6, height=4)
+# p.likert.gini.increase
+# dev.off()
+
+triad.bias <- read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/subj_bias_triad_weighted_diffusion_all.csv", sep=";")
+triad.bias$response <- 1:3
+triad.bias <- melt(triad.bias, id='response')
+
+p.triad.bias <- ggplot(triad.bias, aes(x=factor(response), y=value)) + geom_boxplot(fill="grey") + scale_x_discrete(name='Response') + scale_y_continuous(name='Response bias', limits=c(0,.5)) + geom_hline(yintercept=0)
+
+# tikz(paste(plots.dir, 'triadbias.tikz', sep=''), width=3, height=4)
+# p.triad.bias
+# dev.off()
+
+jump.unweighted.diffusion <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_unweighted_diffusion_all.csv", sep=";")))
+jump.unweighted.diffusion$id <- rownames(jump.unweighted.diffusion)
+jump.unweighted.diffusion <- melt(jump.unweighted.diffusion, id='id')
+jump.unweighted.diffusion$maptype <- 'unweighted'
+jump.unweighted.diffusion$kerneltype <- 'diffusion'
+
+jump.unweighted.linear <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_unweighted_linear_all.csv", sep=";")))
+jump.unweighted.linear$id <- rownames(jump.unweighted.linear)
+jump.unweighted.linear <- melt(jump.unweighted.linear, id='id')
+jump.unweighted.linear$maptype <- 'unweighted'
+jump.unweighted.linear$kerneltype <- 'linear'
+
+jump.weighted.diffusion <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_weighted_diffusion_all.csv", sep=";")))
+jump.weighted.diffusion$id <- rownames(jump.weighted.diffusion)
+jump.weighted.diffusion <- melt(jump.weighted.diffusion, id='id')
+jump.weighted.diffusion$maptype <- 'weighted'
+jump.weighted.diffusion$kerneltype <- 'diffusion'
+
+jump.weighted.linear <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_weighted_linear_all.csv", sep=";")))
+jump.weighted.linear$id <- rownames(jump.weighted.linear)
+jump.weighted.linear <- melt(jump.weighted.linear, id='id')
+jump.weighted.linear$maptype <- 'weighted'
+jump.weighted.linear$kerneltype <- 'linear'
+
+jump <- rbind(jump.unweighted.diffusion, jump.unweighted.linear, jump.weighted.diffusion, jump.weighted.linear)
+
+p.likert.interval <- ggplot(jump, aes(x=variable, y=value, fill=kerneltype)) + geom_boxplot(outlier.size=0) + facet_grid(~maptype) + scale_fill_grey(name='Kernel', start=.3, end=.7) + scale_x_discrete(name='Rating', labels=1:6) + scale_y_continuous(name="Similarity interval size", limits=c(0,2.5)) + geom_hline(yintercept=0) + theme(legend.justification=c(1,0), legend.position=c(1,.7), legend.background=element_rect(color="black"), axis.title.x = element_text(size=10), axis.title.y = element_text(size=10), axis.text.x = element_text(size=8), axis.text.y = element_text(size=8))# + ggtitle('Correlation between triad similarity study and likert scale similarity study')
+
+## uncomment to produce tikz graph
+# tikz(paste(plots.dir, 'likertinterval.tikz', sep=''), width=6, height=4)
+# p.likert.interval
+# dev.off()
+
+similarity_triad_weighted_diffusion_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_triad_weighted_diffusion_all.csv", sep=";"))
+diag(similarity_triad_weighted_diffusion_all) <- 1
+
+similarity_triad_unweighted_diffusion_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_triad_unweighted_diffusion_all.csv", sep=";"))
+diag(similarity_triad_unweighted_diffusion_all) <- 1
+
+
+similarity_triad_weighted_linear_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_triad_weighted_linear_all.csv", sep=";"))
+diag(similarity_triad_weighted_linear_all) <- 1
+
+similarity_triad_unweighted_linear_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_triad_unweighted_linear_all.csv", sep=";"))
+diag(similarity_triad_unweighted_linear_all) <- 1
+
+
+similarity_likert_weighted_diffusion_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_likert_weighted_diffusion_all.csv", sep=";"))
+diag(similarity_likert_weighted_diffusion_all) <- 1
+
+similarity_likert_unweighted_diffusion_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_likert_unweighted_diffusion_all.csv", sep=";"))
+diag(similarity_likert_unweighted_diffusion_all) <- 1
+
+similarity_likert_weighted_linear_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_likert_weighted_linear_all.csv", sep=";"))
+diag(similarity_likert_weighted_linear_all) <- 1
+
+similarity_likert_unweighted_linear_all <- as.matrix(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/similarity_likert_unweighted_linear_all.csv", sep=";"))
+diag(similarity_likert_unweighted_linear_all) <- 1

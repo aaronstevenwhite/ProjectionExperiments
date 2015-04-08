@@ -9,6 +9,7 @@ library(vegan)
 
 ## data manipulation
 library(plyr)
+#library(dplyr)
 library(reshape)
 
 ## set data directory path
@@ -154,8 +155,8 @@ triad.cohens <- do.call('rbind',
                                                                          method=cohens.kappa)))
 
 ## exclude outlier subjects
-triad.exclusions <- find.outlier.subjects(triad.cohens)
-triad <- droplevels(subset(triad, !(subj %in% triad.exclusions)))
+triad.outlier.subjects <- find.outlier.subjects(triad.cohens)
+triad <- droplevels(subset(triad, !(subj %in% triad.outlier.subjects)))
 
 ## uncomment to write triad data
 # write.csv(triad[c('subj', 'verb0', 'verb1', 'verb2', 'responseindex')], 
