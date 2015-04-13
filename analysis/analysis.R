@@ -23,8 +23,14 @@ library(MASS)
 ## heteroscedasticity tests
 library(lmtest)
 
+## beta regression
+library(betareg)
+
 ## Gini
 library(ineq)
+
+## distance
+library(proxy)
 
 ## generalized linear models
 library(MCMCglmm)
@@ -201,29 +207,29 @@ feature.loadings$feature <- as.factor(feature.loadings$feature)
 
 ## order features
 #verb.features$feature <- as.factor(verb.features$feature)
-verb.features$feature.ordered <- ordered(verb.features$feature, levels=feature.order)
-feature.loadings$feature.ordered <- ordered(feature.loadings$feature, levels=feature.order)
+verb.features$feature.ordered <- ordered(verb.features$feature, levels=rev(feature.order))
+feature.loadings$feature.ordered <- ordered(feature.loadings$feature, levels=rev(feature.order))
 
 ## plot features
 p.verb.features.frame <- ggplot(verb.features, aes(x=feature.ordered, y=verb.ordered, fill=value)) + geom_tile(color="grey") + scale_fill_gradient2(name='Similarity', low="white", high="black") + scale_x_discrete(name=element_blank(), labels=1:num.of.features) + scale_y_discrete(name=element_blank()) + theme(axis.text.x = element_text(size=8), axis.text.y = element_text(size=8), axis.ticks=element_blank(), legend.position="none")
-
-p.feature.loadings.frame <- ggplot(feature.loadings, aes(x=feature.ordered, y=frame, fill=value)) + geom_tile(color="grey") + scale_fill_gradient2(low="white", high="black") + scale_x_discrete(name=element_blank(), labels=1:num.of.features) + scale_y_discrete(name=element_blank()) + theme(axis.text.x = element_text(size=8), axis.text.y = element_text(size=8), axis.ticks=element_blank(), panel.grid=element_blank(), panel.border=element_blank(), legend.position="none") 
-
-## uncomment to produce tikz graph
-# tikz(paste(plots.dir, 'featureloadingsnonnegative.tikz', sep=''), width=6, height=4)
-# p.feature.loadings.frame
-# dev.off()
 
 ## uncomment to produce tikz graph
 # tikz(paste(plots.dir, 'verbfeaturesnonnegative.tikz', sep=''), width=6, height=4)
 # p.verb.features.frame
 # dev.off()
 
+p.feature.loadings.frame <- ggplot(feature.loadings, aes(x=feature.ordered, y=frame, fill=value)) + geom_tile(color="grey") + scale_fill_gradient2(low="white", high="black") + scale_x_discrete(name=element_blank(), labels=1:num.of.features) + scale_y_discrete(name=element_blank()) + theme(axis.text.x = element_text(size=8), axis.text.y = element_text(size=6), axis.ticks=element_blank(), panel.grid=element_blank(), panel.border=element_blank(), legend.position="none") 
+
+## uncomment to produce tikz graph
+# tikz(paste(plots.dir, 'featureloadingsnonnegative.tikz', sep=''), width=6, height=4)
+# p.feature.loadings.frame
+# dev.off()
+
 acceptability.jump <- read.csv("~/experiments/ProjectionExperiments/analysis/model/likert_factor_analysis/discrete/jump_14.csv", sep=";")
 acceptability.jump$jump <- 1:6
 acceptability.jump <- melt(acceptability.jump, id='jump')
 
-p.acceptability.jump <- ggplot(acceptability.jump, aes(x=factor(jump), y=value, group=variable)) + geom_line(alpha=.1) + geom_boxplot(data=likert.jump, aes(x=factor(jump), y=value), inherit.aes=F, fill="grey") + scale_x_discrete(name='Rating') + scale_y_continuous(name='Acceptability interval size', breaks=0:6)
+p.acceptability.jump <- ggplot(acceptability.jump, aes(x=factor(jump), y=value, group=variable)) + geom_line(alpha=.1) + geom_boxplot(data=acceptability.jump, aes(x=factor(jump), y=value), inherit.aes=F, fill="grey") + scale_x_discrete(name='Rating') + scale_y_continuous(name='Acceptability interval size', breaks=0:6)
 
 ## uncomment to produce tikz graph
 # tikz(paste(plots.dir, 'acceptabilityinterval.tikz', sep=''), width=6, height=4)
@@ -387,7 +393,7 @@ residual.low <- filter(similarity, response.residual.standardized < -2.5)[c('ver
 residual.high.ordered <- residual.high[rev(order(residual.high$response.residual.standardized)),]
 residual.low.ordered <- residual.low[order(residual.low$response.residual.standardized),]
 
-residual.ordered <- rbind(residual.high.ordered, residual.low.ordered)
+residual.ordered <- residual.low.ordered#rbind(residual.high.ordered, residual.low.ordered)
 
 ## uncomment to print tables
 # print(xtable(residual.high.ordered[seq(1, nrow(residual.high.ordered), 2),]), include.rownames=FALSE)
@@ -491,6 +497,8 @@ triad.gini.2 <- subset(melt(as.matrix(dist(t(as.matrix(triad.loadings.weighted))
 triad.gini.both <- merge(merge(triad.gini.2, triad.gini.1, by.x='X1', by.y='frame'), triad.gini.1, by.x='X2', by.y='frame')
 names(triad.gini.both) <- c('frame1', 'frame2', 'gini2', 'gini11', 'gini12')
 
+logit <- function(p) log(p) - log(1-p)
+
 triad.gini.both$gini.residual <- triad.gini.both$gini2 - predict(betareg(gini2 ~ logit(gini11)*logit(gini12), data=triad.gini.both))
 
 triad.gini.both$frame1.ordered <- ordered(triad.gini.both$frame1, levels=triad.frame.weights$frame[rev(order(triad.frame.weights$weighted.frame.gini))])
@@ -558,31 +566,28 @@ p.triad.bias <- ggplot(triad.bias, aes(x=factor(response), y=value)) + geom_boxp
 # p.triad.bias
 # dev.off()
 
-jump.unweighted.diffusion <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_unweighted_diffusion_all.csv", sep=";")))
-jump.unweighted.diffusion$id <- rownames(jump.unweighted.diffusion)
-jump.unweighted.diffusion <- melt(jump.unweighted.diffusion, id='id')
-jump.unweighted.diffusion$maptype <- 'unweighted'
-jump.unweighted.diffusion$kerneltype <- 'diffusion'
+load.likert.jump <- function(maptype, kerneltype){
+  fname <- paste('~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_', maptype, '_', kerneltype,'_all.csv', sep='')
+  
+  jump <- as.data.frame(t(read.csv(fname, sep=";")))
+  jump$id <- rownames(jump)
+  jump <- melt(jump, id='id')
+  jump$maptype <- maptype
+  jump$kerneltype <- kerneltype
+  
+  return(jump)
+}
 
-jump.unweighted.linear <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_unweighted_linear_all.csv", sep=";")))
-jump.unweighted.linear$id <- rownames(jump.unweighted.linear)
-jump.unweighted.linear <- melt(jump.unweighted.linear, id='id')
-jump.unweighted.linear$maptype <- 'unweighted'
-jump.unweighted.linear$kerneltype <- 'linear'
+jump <- rbind(load.likert.jump('unweighted', 'diffusion'), 
+              load.likert.jump('unweighted', 'linear'), 
+              load.likert.jump('weighted', 'diffusion'), 
+              load.likert.jump('weighted', 'linear'))
 
-jump.weighted.diffusion <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_weighted_diffusion_all.csv", sep=";")))
-jump.weighted.diffusion$id <- rownames(jump.weighted.diffusion)
-jump.weighted.diffusion <- melt(jump.weighted.diffusion, id='id')
-jump.weighted.diffusion$maptype <- 'weighted'
-jump.weighted.diffusion$kerneltype <- 'diffusion'
+quantile(filter(jump, maptype=='unweighted', kerneltype=='diffusion', variable=='V1')$value)
+quantile(filter(jump, maptype=='weighted', kerneltype=='diffusion', variable=='V1')$value)
+quantile(filter(jump, maptype=='unweighted', kerneltype=='linear', variable=='V1')$value)
+quantile(filter(jump, maptype=='weighted', kerneltype=='linear', variable=='V1')$value)
 
-jump.weighted.linear <- as.data.frame(t(read.csv("~/experiments/ProjectionExperiments/analysis/model/similarity_model/jump_likert_weighted_linear_all.csv", sep=";")))
-jump.weighted.linear$id <- rownames(jump.weighted.linear)
-jump.weighted.linear <- melt(jump.weighted.linear, id='id')
-jump.weighted.linear$maptype <- 'weighted'
-jump.weighted.linear$kerneltype <- 'linear'
-
-jump <- rbind(jump.unweighted.diffusion, jump.unweighted.linear, jump.weighted.diffusion, jump.weighted.linear)
 
 p.likert.interval <- ggplot(jump, aes(x=variable, y=value, fill=kerneltype)) + geom_boxplot(outlier.size=0) + facet_grid(~maptype) + scale_fill_grey(name='Kernel', start=.3, end=.7) + scale_x_discrete(name='Rating', labels=1:6) + scale_y_continuous(name="Similarity interval size", limits=c(0,2.5)) + geom_hline(yintercept=0) + theme(legend.justification=c(1,0), legend.position=c(1,.7), legend.background=element_rect(color="black"), axis.title.x = element_text(size=10), axis.title.y = element_text(size=10), axis.text.x = element_text(size=8), axis.text.y = element_text(size=8))# + ggtitle('Correlation between triad similarity study and likert scale similarity study')
 
