@@ -10,7 +10,7 @@ A small portion of these data and analyses was presented at [NELS 43](https://ne
 
 ### materials/
 
-This directory contains all the materials needed to run each of the three experiments.
+This directory contains all the materials needed to run each of the three experiments. If you are interested in replicating or extending the acceptability judgment and generalized semantic discrimination judgment (triad) experiments and would like to use these materials, please contact Aaron Steven White. These two experiments were run in 2012 and can be deployed in a more streamlined fashion, which the authors would be happy to assist other researchers with.
 
 ### data/
 
